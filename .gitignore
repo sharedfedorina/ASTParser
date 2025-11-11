@@ -18,7 +18,12 @@ __pycache__/
 *.egg
 *.egg-info/
 dist/
-build/
+
+# Keep compiled tree-sitter library
+!build/
+!build/my-languages.dll
+!build/my-languages.lib
+!build/my-languages.exp
 
 # Test projects
 invoiceninja/
