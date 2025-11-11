@@ -47,6 +47,23 @@ python linker_full.py ast_full.json
 
 ## Вимоги
 
+### На робочому ноутбуці (БЕЗ компіляції)
+
+Репозиторій вже містить скомпільовану бібліотеку `build/my-languages.dll` для Windows.
+
+```bash
+# Клонувати з submodules
+git clone --recursive https://github.com/sharedfedorina/ASTParser.git
+
+# Або якщо вже клонували без --recursive:
+git submodule update --init --recursive
+
+# Встановити тільки Python пакети
+pip install tree-sitter
+```
+
+### Якщо потрібна компіляція (для інших систем)
+
 ```bash
 pip install tree-sitter tree-sitter-php
 ```
