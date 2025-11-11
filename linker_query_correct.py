@@ -262,6 +262,180 @@ def infer_type(field_name, value_text):
     return {'type': 'string'}
 
 
+def extract_path_parameters(path):
+    """Витягти path parameters з route path"""
+    import re
+    params = []
+    for match in re.finditer(r'\{(\w+)\}', path):
+        param_name = match.group(1)
+        params.append({
+            'name': param_name,
+            'in': 'path',
+            'required': True,
+            'schema': {'type': 'string'}
+        })
+    return params
+
+
+def extract_query_parameters(method_node, code, laravel_path):
+    """Витягти query parameters через Query API"""
+    # Знайти FormRequest параметр через Query API
+    param_query = Query(PHP_LANGUAGE, """
+        (simple_parameter
+          type: (named_type) @param_type
+          name: (variable_name) @param_name
+        )
+    """)
+
+    cursor = QueryCursor(param_query)
+    form_request_class = None
+
+    for _, captures in cursor.matches(method_node):
+        if 'param_type' in captures and 'param_name' in captures:
+            type_node = captures['param_type'][0]
+            param_type = type_node.text.decode('utf-8')
+
+            # Якщо параметр закінчується на Request - це FormRequest
+            if param_type.endswith('Request'):
+                form_request_class = param_type
+                break
+
+    if not form_request_class:
+        return []
+
+    # Знайти FormRequest файл
+    form_request_file = find_form_request(form_request_class, laravel_path)
+    if not form_request_file:
+        return []
+
+    tree, form_code = parse_php(form_request_file)
+
+    # Знайти class через Query API
+    class_query = Query(PHP_LANGUAGE, """
+        (class_declaration
+          name: (name) @class_name
+        ) @class
+    """)
+
+    cursor = QueryCursor(class_query)
+    class_node = None
+
+    for _, captures in cursor.matches(tree.root_node):
+        if 'class_name' in captures:
+            class_name = captures['class_name'][0].text.decode('utf-8')
+            if class_name == form_request_class:
+                class_node = captures['class'][0]
+                break
+
+    if not class_node:
+        return []
+
+    # Знайти rules() метод
+    rules_method = find_method(class_node, 'rules', form_code)
+    if not rules_method:
+        return []
+
+    # Парсити validation rules
+    return parse_validation_rules(rules_method, form_code)
+
+
+def find_form_request(class_name, laravel_path):
+    """Знайти FormRequest файл"""
+    app_path = Path(laravel_path) / 'app' / 'Http' / 'Requests'
+
+    if not app_path.exists():
+        return None
+
+    for php_file in app_path.rglob('*.php'):
+        tree, code = parse_php(php_file)
+
+        class_query = Query(PHP_LANGUAGE, """
+            (class_declaration
+              name: (name) @class_name
+            )
+        """)
+
+        cursor = QueryCursor(class_query)
+
+        for _, captures in cursor.matches(tree.root_node):
+            if 'class_name' in captures:
+                found_class = captures['class_name'][0].text.decode('utf-8')
+                if found_class == class_name:
+                    return php_file
+
+    return None
+
+
+def parse_validation_rules(rules_method, code):
+    """Парсити validation rules через Query API"""
+    params = []
+
+    # Знайти return statement
+    return_query = Query(PHP_LANGUAGE, "(return_statement) @return")
+    cursor = QueryCursor(return_query)
+
+    for _, captures in cursor.matches(rules_method):
+        if 'return' in captures:
+            return_node = captures['return'][0]
+
+            # Знайти array
+            array_query = Query(PHP_LANGUAGE, "(array_creation_expression) @array")
+            cursor2 = QueryCursor(array_query)
+
+            for _, array_captures in cursor2.matches(return_node):
+                if 'array' in array_captures:
+                    array_node = array_captures['array'][0]
+
+                    # Парсити array elements
+                    elem_query = Query(PHP_LANGUAGE, "(array_element_initializer) @elem")
+                    cursor3 = QueryCursor(elem_query)
+
+                    for _, elem_captures in cursor3.matches(array_node):
+                        if 'elem' in elem_captures:
+                            for elem_node in elem_captures['elem']:
+                                # Витягти ключ (назва поля)
+                                string_query = Query(PHP_LANGUAGE, "(string) @str")
+                                cursor4 = QueryCursor(string_query)
+
+                                strings = []
+                                for _, str_captures in cursor4.matches(elem_node):
+                                    if 'str' in str_captures:
+                                        for s in str_captures['str']:
+                                            strings.append(s.text.decode('utf-8').strip('"\''))
+
+                                if strings:
+                                    field_name = strings[0]
+                                    value_text = elem_node.text.decode('utf-8')
+
+                                    # Визначити тип та required
+                                    param_schema = infer_param_type(field_name, value_text)
+                                    is_required = 'required' in value_text.lower()
+
+                                    params.append({
+                                        'name': field_name,
+                                        'in': 'query',
+                                        'required': is_required,
+                                        'schema': param_schema
+                                    })
+
+    return params
+
+
+def infer_param_type(field_name, validation_text):
+    """Визначити тип параметра з validation rules"""
+    if 'integer' in validation_text or 'numeric' in validation_text:
+        return {'type': 'integer'}
+    if 'boolean' in validation_text:
+        return {'type': 'boolean'}
+    if 'email' in validation_text:
+        return {'type': 'string', 'format': 'email'}
+    if 'date' in validation_text:
+        return {'type': 'string', 'format': 'date'}
+    if 'array' in validation_text:
+        return {'type': 'array', 'items': {'type': 'string'}}
+    return {'type': 'string'}
+
+
 def link_routes(routes, laravel_path):
     print(f"[*] Linking {len(routes)} routes...")
     linked = []
@@ -273,17 +447,28 @@ def link_routes(routes, laravel_path):
         controller_file, class_node, code = find_controller(route['controller'], laravel_path)
 
         if not controller_file:
-            linked.append({**route, 'response': {}})
+            linked.append({**route, 'response': {}, 'parameters': []})
             continue
 
         method_node = find_method(class_node, route['action'], code)
 
         if not method_node:
-            linked.append({**route, 'response': {}})
+            linked.append({**route, 'response': {}, 'parameters': []})
             continue
 
         response = extract_response(method_node, class_node, code)
-        linked.append({**route, 'response': response})
+
+        # Extract request parameters
+        path_params = extract_path_parameters(route['path'])
+        query_params = extract_query_parameters(method_node, code, laravel_path)
+
+        all_params = path_params + query_params
+
+        linked.append({
+            **route,
+            'response': response,
+            'parameters': all_params
+        })
 
     return linked
 
@@ -294,7 +479,8 @@ def generate_openapi(routes):
         path = route['path']
         if path not in paths:
             paths[path] = {}
-        paths[path]['get'] = {
+
+        endpoint = {
             'summary': f"GET {path}",
             'description': f"{route['controller']}.{route['action']}()",
             'responses': {
@@ -308,6 +494,13 @@ def generate_openapi(routes):
                 }
             }
         }
+
+        # Додати parameters якщо є
+        if route.get('parameters'):
+            endpoint['parameters'] = route['parameters']
+
+        paths[path]['get'] = endpoint
+
     return {
         'openapi': '3.0.3',
         'info': {'title': 'Laravel API - GET Endpoints (Query API)', 'version': '1.0.0'},
@@ -330,7 +523,14 @@ if __name__ == '__main__':
     print(f"[*] Linked {len(linked)} routes")
 
     with_response = sum(1 for r in linked if r.get('response') and r['response'].get('properties'))
+    with_params = sum(1 for r in linked if r.get('parameters'))
+    path_params_count = sum(len([p for p in r.get('parameters', []) if p['in'] == 'path']) for r in linked)
+    query_params_count = sum(len([p for p in r.get('parameters', []) if p['in'] == 'query']) for r in linked)
+
     print(f"\n[*] Response coverage: {with_response}/{len(linked)} ({with_response*100//len(linked) if linked else 0}%)")
+    print(f"[*] With parameters: {with_params}/{len(linked)} ({with_params*100//len(linked) if linked else 0}%)")
+    print(f"    Path parameters: {path_params_count}")
+    print(f"    Query parameters: {query_params_count}")
 
     openapi = generate_openapi(linked)
 
@@ -341,3 +541,4 @@ if __name__ == '__main__':
     print(f"\n[+] Done! {output}")
     print(f"    GET endpoints: {len(linked)}")
     print(f"    With schemas: {with_response}")
+    print(f"    With parameters: {with_params}")
