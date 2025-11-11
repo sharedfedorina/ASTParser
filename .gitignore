@@ -1,0 +1,52 @@
+# Generated AST files (too large)
+*.json
+!package.json
+ast_*.json
+openapi*.json
+openapi*.yaml
+
+# Output files
+dump.md
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+
+# Test projects
+invoiceninja/
+bagisto/
+laravel_api_extractor/
+
+# Logs
+*.log
+output.log
+nul
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Old/backup files
+*_copy.py
+*_old.py
+dump_ast.py
+linker.py
+linker_v2.py
+api_*.py
+extract_*.py
+precheck.py
+debug_*.py
+show_*.py
+ts_*.py
+build_treesitter_php.py
+redoc-static.html
